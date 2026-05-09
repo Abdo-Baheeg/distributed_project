@@ -1,0 +1,23 @@
+# Control plane & broker
+redis>=5.0.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.0.0
+
+# Worker orchestration
+ray[default]>=2.9.0
+
+# RAG
+faiss-cpu>=1.8.0
+sentence-transformers>=2.6.0
+numpy>=1.24.0
+
+# LLM (GPU/CUDA; use faiss-gpu on Colab if desired)
+torch>=2.2.0
+transformers>=4.40.0
+accelerate>=0.30.0
+bitsandbytes>=0.43.0
+safetensors>=0.4.0
+
+# Client
+requests>=2.31.0
