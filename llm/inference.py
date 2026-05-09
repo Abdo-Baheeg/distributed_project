@@ -1,9 +1,10 @@
 """
-4-bit quantized Llama-3 inference via transformers + bitsandbytes (optional CPU stub).
+LLM backends: Hugging Face 4-bit Llama (BitsAndBytes), local Ollama (e.g. Llama 3.2 on Colab), or stub.
 """
 
 from __future__ import annotations
 
+import abc
 import logging
 import os
 import sys
@@ -20,7 +21,55 @@ _DEFAULT_MODEL = os.environ.get(
 )
 
 
-class LlamaEngine:
+class BaseLLMEngine(abc.ABC):
+    @abc.abstractmethod
+    def load(self) -> None: ...
+
+    @abc.abstractmethod
+    def ensure_loaded(self) -> None: ...
+
+    @abc.abstractmethod
+    def build_prompt(self, query: str, contexts: list[str]) -> str: ...
+
+    @abc.abstractmethod
+    def run_llm(self, prompt: str, max_new_tokens: int = 256, temperature: float = 0.7) -> str: ...
+
+    def answer_with_rag(
+        self,
+        query: str,
+        contexts: list[str],
+        max_new_tokens: int = 256,
+        temperature: float = 0.7,
+    ) -> str:
+        prompt = self.build_prompt(query, contexts)
+        return self.run_llm(prompt, max_new_tokens=max_new_tokens, temperature=temperature)
+
+
+class StubLlamaEngine(BaseLLMEngine):
+    def load(self) -> None:
+        logger.warning("LLM_USE_STUB=1: deterministic stub generation")
+
+    def ensure_loaded(self) -> None:
+        pass
+
+    def build_prompt(self, query: str, contexts: list[str]) -> str:
+        ctx_block = "\n".join(f"- {c}" for c in contexts) if contexts else "(no context retrieved)"
+        system_text = (
+            "You are a helpful assistant. Answer using the context when it is relevant.\n\n"
+            f"Context:\n{ctx_block}"
+        )
+        return f"[system]\n{system_text}\n\n[user]\n{query}\n\n[assistant]\n"
+
+    def run_llm(self, prompt: str, max_new_tokens: int = 256, temperature: float = 0.7) -> str:
+        return (
+            f"[stub-llm] {max_new_tokens} max tokens. "
+            f"Preview: {prompt[:200]!r}..."
+        )
+
+
+class HuggingFaceLlamaEngine(BaseLLMEngine):
+    """4-bit Llama via transformers + bitsandbytes."""
+
     def __init__(
         self,
         model_id: str | None = None,
@@ -30,19 +79,14 @@ class LlamaEngine:
         self.device_map = device_map or os.environ.get("LLM_DEVICE_MAP", "auto")
         self._tokenizer = None
         self._model = None
-        self._use_stub = os.environ.get("LLM_USE_STUB", "").lower() in ("1", "true", "yes")
 
     def load(self) -> None:
-        if self._use_stub:
-            logger.warning("LLM_USE_STUB=1: using deterministic stub generation")
-            return
-
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
         if not torch.cuda.is_available():
-            logger.warning("CUDA not available; set LLM_USE_STUB=1 for CPU dev or use GPU runtime")
-            raise RuntimeError("Quantized Llama inference expects CUDA (e.g. Colab GPU)")
+            logger.warning("CUDA not available; set LLM_USE_STUB=1 or LLM_BACKEND=ollama")
+            raise RuntimeError("Hugging Face quantized Llama expects CUDA unless using stub/Ollama")
 
         bnb = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -63,14 +107,8 @@ class LlamaEngine:
         )
         logger.info("Loaded 4-bit model %s", self.model_id)
 
-    def _stub_generate(self, prompt: str, max_new_tokens: int) -> str:
-        return (
-            f"[stub-llm] {max_new_tokens} max tokens. "
-            f"Preview: {prompt[:200]!r}..."
-        )
-
     def ensure_loaded(self) -> None:
-        if self._model is None and not self._use_stub:
+        if self._model is None:
             self.load()
 
     def build_prompt(self, query: str, contexts: list[str]) -> str:
@@ -84,8 +122,7 @@ class LlamaEngine:
             {"role": "system", "content": system_text},
             {"role": "user", "content": query},
         ]
-        if self._use_stub or self._tokenizer is None:
-            return f"[system]\n{system_text}\n\n[user]\n{query}\n\n[assistant]\n"
+        assert self._tokenizer is not None
         if hasattr(self._tokenizer, "apply_chat_template"):
             return self._tokenizer.apply_chat_template(
                 messages,
@@ -101,8 +138,7 @@ class LlamaEngine:
         temperature: float = 0.7,
     ) -> str:
         self.ensure_loaded()
-        if self._use_stub or self._model is None:
-            return self._stub_generate(prompt, max_new_tokens)
+        assert self._tokenizer is not None and self._model is not None
 
         import torch
 
@@ -125,6 +161,73 @@ class LlamaEngine:
             text = text[len(prompt) :].lstrip()
         return text
 
+
+class OllamaEngine(BaseLLMEngine):
+    """Llama via Ollama HTTP API (/api/chat), e.g. `llama3.2:1b` on Colab."""
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        self.base_url = (base_url or os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/")
+        self.model = model or os.environ.get("OLLAMA_MODEL", "llama3.2:1b")
+        self._timeout_sec = float(os.environ.get("OLLAMA_TIMEOUT_SEC", "600"))
+
+    def load(self) -> None:
+        try:
+            import requests
+
+            r = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            r.raise_for_status()
+            logger.info("Ollama reachable at %s; model=%s", self.base_url, self.model)
+        except Exception as e:
+            logger.warning("Ollama probe failed (%s): is `ollama serve` running?", e)
+
+    def ensure_loaded(self) -> None:
+        pass
+
+    def _chat(
+        self,
+        messages: list[dict[str, str]],
+        max_new_tokens: int,
+        temperature: float,
+    ) -> str:
+        import requests
+
+        body: dict = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "num_predict": max_new_tokens,
+                "temperature": temperature,
+            },
+        }
+        r = requests.post(
+            f"{self.base_url}/api/chat",
+            json=body,
+            timeout=self._timeout_sec,
+        )
+        r.raise_for_status()
+        data = r.json()
+        msg = data.get("message") or {}
+        content = msg.get("content")
+        if not content:
+            raise RuntimeError(f"Unexpected Ollama response: {data}")
+        return str(content).strip()
+
+    def build_prompt(self, query: str, contexts: list[str]) -> str:
+        ctx_block = "\n".join(f"- {c}" for c in contexts) if contexts else "(no context retrieved)"
+        return (
+            "You are a helpful assistant. Answer using the context when it is relevant.\n\n"
+            f"Context:\n{ctx_block}\n\nUser question:\n{query}"
+        )
+
+    def run_llm(self, prompt: str, max_new_tokens: int = 256, temperature: float = 0.7) -> str:
+        messages = [{"role": "user", "content": prompt}]
+        return self._chat(messages, max_new_tokens, temperature)
+
     def answer_with_rag(
         self,
         query: str,
@@ -132,17 +235,42 @@ class LlamaEngine:
         max_new_tokens: int = 256,
         temperature: float = 0.7,
     ) -> str:
-        prompt = self.build_prompt(query, contexts)
-        return self.run_llm(prompt, max_new_tokens=max_new_tokens, temperature=temperature)
+        ctx_block = "\n".join(f"- {c}" for c in contexts) if contexts else "(no context retrieved)"
+        system_text = (
+            "You are a helpful assistant. Answer using the context when it is relevant.\n\n"
+            f"Context:\n{ctx_block}"
+        )
+        messages = [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": query},
+        ]
+        return self._chat(messages, max_new_tokens, temperature)
 
 
-_ENGINE: LlamaEngine | None = None
+# Back-compat alias used in docs / older references
+LlamaEngine = HuggingFaceLlamaEngine
+
+_ENGINE: BaseLLMEngine | None = None
 
 
-def get_engine() -> LlamaEngine:
+def get_engine() -> BaseLLMEngine:
     global _ENGINE
-    if _ENGINE is None:
-        _ENGINE = LlamaEngine()
+    if _ENGINE is not None:
+        return _ENGINE
+
+    stub = os.environ.get("LLM_USE_STUB", "").lower() in ("1", "true", "yes")
+    if stub:
+        _ENGINE = StubLlamaEngine()
+        _ENGINE.load()
+        return _ENGINE
+
+    backend = os.environ.get("LLM_BACKEND", "hf").strip().lower()
+    if backend in ("ollama", "local", "ollama-http"):
+        _ENGINE = OllamaEngine()
+        _ENGINE.load()
+        return _ENGINE
+
+    _ENGINE = HuggingFaceLlamaEngine()
     return _ENGINE
 
 
@@ -173,6 +301,10 @@ def answer_with_rag(
 
 
 __all__ = [
+    "BaseLLMEngine",
+    "StubLlamaEngine",
+    "HuggingFaceLlamaEngine",
+    "OllamaEngine",
     "LlamaEngine",
     "run_llm",
     "build_rag_prompt",

@@ -1,0 +1,4 @@
+# RAG-only (FAISS + embeddings for Colab / offline index work)
+faiss-cpu>=1.8.0
+sentence-transformers>=2.6.0
+numpy>=1.24.0

@@ -56,13 +56,23 @@ class FaissRetriever:
     def ensure_loaded(self) -> None:
         index_path = self.index_dir / "index.faiss"
         meta_path = self.index_dir / "meta.json"
-        corpus_path = Path(__file__).parent / "sample_corpus.txt"
+
+        corp_env = os.environ.get("RAG_CORPUS_PATH", "").strip()
+        if corp_env:
+            corpus_path = Path(corp_env).expanduser()
+        else:
+            corpus_path = Path(__file__).parent / "sample_corpus.txt"
 
         self.index_dir.mkdir(parents=True, exist_ok=True)
 
         if index_path.exists() and meta_path.exists():
             self._load_index(index_path, meta_path)
             return
+
+        if not corpus_path.is_file():
+            raise FileNotFoundError(
+                f"RAG corpus not found: {corpus_path}. Set RAG_CORPUS_PATH or add rag/sample_corpus.txt"
+            )
 
         logger.info("Building FAISS index from %s", corpus_path)
         text = corpus_path.read_text(encoding="utf-8")
