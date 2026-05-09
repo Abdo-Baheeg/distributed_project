@@ -1,7 +1,0 @@
-# Worker-only deps when using LLM_BACKEND=ollama (no transformers/bitsandbytes on GPU)
-redis>=5.0.0
-ray[default]>=2.9.0
-faiss-cpu>=1.8.0
-sentence-transformers>=2.6.0
-numpy>=1.24.0
-requests>=2.31.0

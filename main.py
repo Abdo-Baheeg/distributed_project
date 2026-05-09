@@ -19,6 +19,10 @@ def main() -> None:
     if root not in sys.path:
         sys.path.insert(0, root)
 
+    from common.config import load_env
+
+    load_env()
+
     p = argparse.ArgumentParser(description="Distributed AI system")
     p.add_argument("mode", choices=["api", "worker", "load"], nargs="?", default="api")
     p.add_argument("--host", default="0.0.0.0")

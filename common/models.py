@@ -15,7 +15,7 @@ class TaskStatus(str, Enum):
 
 @dataclass(frozen=True)
 class TaskRequest:
-    """User query submitted to the control plane."""
+    """Inbound work unit (also exposed as **`Request`** for skeleton naming)."""
 
     query: str
     task_id: str | None = None
@@ -45,7 +45,7 @@ class TaskRequest:
 
 @dataclass(frozen=True)
 class TaskResponse:
-    """Result stored for client polling."""
+    """Pollable outcome (also exposed as **`Response`** for skeleton naming)."""
 
     task_id: str
     answer: str
@@ -89,3 +89,19 @@ def result_key(task_id: str) -> str:
 
 def meta_key(task_id: str) -> str:
     return f"task:meta:{task_id}"
+
+
+# Skeleton aliases
+Request = TaskRequest
+Response = TaskResponse
+
+
+__all__ = [
+    "TaskStatus",
+    "TaskRequest",
+    "TaskResponse",
+    "Request",
+    "Response",
+    "result_key",
+    "meta_key",
+]

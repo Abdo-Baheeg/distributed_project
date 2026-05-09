@@ -1,0 +1,11 @@
+# Single-notebook stack: Redis client + API + Ray + RAG + Ollama HTTP client (+ optional HF not included)
+python-dotenv>=1.0.0
+redis>=5.0.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.0.0
+ray[default]>=2.9.0
+faiss-cpu>=1.8.0
+sentence-transformers>=2.6.0
+numpy>=1.24.0
+requests>=2.31.0

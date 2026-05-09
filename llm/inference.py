@@ -15,6 +15,42 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+
+def ollama_generate(
+    prompt: str,
+    *,
+    max_new_tokens: int = 256,
+    temperature: float = 0.7,
+    base_url: str | None = None,
+    model: str | None = None,
+) -> str:
+    """
+    Blocking **HTTP** call to local Ollama **`POST /api/generate`**.
+    Prefer **`answer_with_rag`** / **`/api/chat`** when you need a system+RAG turns.
+    """
+    import requests
+
+    base = (base_url or os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/")
+    mod = model or os.environ.get("OLLAMA_MODEL", "llama3.2:1b")
+    timeout = float(os.environ.get("OLLAMA_TIMEOUT_SEC", "600"))
+    r = requests.post(
+        f"{base}/api/generate",
+        json={
+            "model": mod,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"num_predict": max_new_tokens, "temperature": temperature},
+        },
+        timeout=timeout,
+    )
+    r.raise_for_status()
+    data = r.json()
+    text = data.get("response")
+    if not text:
+        raise RuntimeError(f"Unexpected Ollama /api/generate response: {data}")
+    return str(text).strip()
+
+
 _DEFAULT_MODEL = os.environ.get(
     "HF_MODEL_ID",
     "meta-llama/Meta-Llama-3-8B-Instruct",
@@ -225,8 +261,13 @@ class OllamaEngine(BaseLLMEngine):
         )
 
     def run_llm(self, prompt: str, max_new_tokens: int = 256, temperature: float = 0.7) -> str:
-        messages = [{"role": "user", "content": prompt}]
-        return self._chat(messages, max_new_tokens, temperature)
+        return ollama_generate(
+            prompt,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            base_url=self.base_url,
+            model=self.model,
+        )
 
     def answer_with_rag(
         self,
@@ -264,7 +305,7 @@ def get_engine() -> BaseLLMEngine:
         _ENGINE.load()
         return _ENGINE
 
-    backend = os.environ.get("LLM_BACKEND", "hf").strip().lower()
+    backend = os.environ.get("LLM_BACKEND", "ollama").strip().lower()
     if backend in ("ollama", "local", "ollama-http"):
         _ENGINE = OllamaEngine()
         _ENGINE.load()
@@ -279,6 +320,9 @@ def run_llm(
     max_new_tokens: int = 256,
     temperature: float = 0.7,
 ) -> str:
+    """
+    Default engine inference. With **`LLM_BACKEND=ollama`** (default), this is an Ollama **HTTP** `/api/generate` call via **`ollama_generate`**.
+    """
     return get_engine().run_llm(prompt, max_new_tokens=max_new_tokens, temperature=temperature)
 
 
@@ -306,6 +350,7 @@ __all__ = [
     "HuggingFaceLlamaEngine",
     "OllamaEngine",
     "LlamaEngine",
+    "ollama_generate",
     "run_llm",
     "build_rag_prompt",
     "answer_with_rag",

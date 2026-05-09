@@ -1,6 +1,9 @@
 """
 Redis Streams wiring: task queue, consumer group, result keys.
 
+In production this Redis server is typically the **message broker** on an AWS VPS
+(EC2/ElastiCache or self-hosted); workers and master share **REDIS_URL**.
+
 Stream payload fields:
   - payload: JSON-serialized TaskRequest (with task_id set)
 """

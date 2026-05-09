@@ -1,3 +1,6 @@
+# Configuration
+python-dotenv>=1.0.0
+
 # Control plane & broker
 redis>=5.0.0
 fastapi>=0.110.0

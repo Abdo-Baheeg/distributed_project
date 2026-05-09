@@ -166,6 +166,10 @@ def run_load_test(
 
 
 def main() -> None:
+    from common.config import load_env
+
+    load_env()
+
     p = argparse.ArgumentParser(description="Distributed AI load generator")
     p.add_argument("--base-url", default=os.environ.get("BASE_URL", "http://127.0.0.1:8000"))
     p.add_argument("--users", type=int, default=int(os.environ.get("LOAD_USERS", "1000")))
