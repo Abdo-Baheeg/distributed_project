@@ -2,7 +2,7 @@ import os
 import json
 import asyncio
 import redis.asyncio as redis # Using async redis for high concurrency
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from contextlib import asynccontextmanager
 from common.models import TaskRequest, TaskResponse, TaskStatus, to_json
 from dotenv import load_dotenv
@@ -27,12 +27,12 @@ async def fault_tolerance_monitor(redis_client):
             )
         except Exception as e:
             print(f"[Monitor Error] {e}")
-        [cite_start]await asyncio.sleep(60) # Run check every 60 seconds[span_2](end_span)
+        await asyncio.sleep(60)
+
 
 # --- LIFESPAN MANAGER ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # [span_3](start_span)Startup: Initialize Redis and Consumer Groups[span_3](end_span)
     app.state.redis = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
     try:
         # Create Consumer Group 'workers' to distribute tasks
@@ -40,7 +40,6 @@ async def lifespan(app: FastAPI):
     except redis.exceptions.ResponseError:
         pass # Group already exists
     
-    # [span_4](start_span)Start the Fault Tolerance background task[span_4](end_span)
     monitor_task = asyncio.create_task(fault_tolerance_monitor(app.state.redis))
     yield
     # Shutdown
@@ -88,6 +87,6 @@ async def get_task_result(task_id: int):
 
 @app.get("/health")
 async def health():
-    [span_5](start_span)"""System Monitoring endpoint[span_5](end_span)"""
+    """System monitoring endpoint."""
     is_alive = await app.state.redis.ping()
     return {"status": "active", "redis_connected": is_alive}

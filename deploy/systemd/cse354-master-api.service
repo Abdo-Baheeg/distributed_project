@@ -1,0 +1,25 @@
+[Unit]
+Description=CSE354 FastAPI master API (master.scheduler)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cse354
+Group=cse354
+WorkingDirectory=/opt/cse354-api
+Environment=PYTHONPATH=/opt/cse354-api
+EnvironmentFile=-/opt/cse354-api/.env
+
+# Bind localhost only; nginx on same host terminates TLS and proxies (least_conn upstream optional).
+ExecStart=/opt/cse354-api/.venv/bin/uvicorn master.scheduler:app --host 127.0.0.1 --port 8000 --workers 2
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,112 @@
+# CI + CD: FastAPI master (`master.scheduler`) → AWS VPS via SSH/rsync + systemd restart.
+#
+# Secrets: VPS_HOST, VPS_USER, VPS_SSH_KEY
+# Variable (optional): VPS_DEPLOY_PATH (default /opt/cse354-api)
+
+name: Deploy master API
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "master/**"
+      - "common/**"
+      - "deploy/**"
+      - ".github/workflows/deploy-master-api.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-master-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install API dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r deploy/requirements-api.txt
+
+      - name: Syntax check and import app
+        env:
+          REDIS_URL: redis://127.0.0.1:6379/0
+        run: |
+          python -m compileall -q common master
+          python -c "import sys; sys.path.insert(0,'.'); import master.scheduler as s; print('app:', s.app.title)"
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-latest
+    if: |
+      needs.ci.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.ref == 'refs/heads/main' ||
+       github.ref == 'refs/heads/master')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve deploy path
+        id: deploy
+        run: |
+          P="${{ vars.VPS_DEPLOY_PATH }}"
+          echo "path=${P:-/opt/cse354-api}" >> "$GITHUB_OUTPUT"
+          echo "Using DEPLOY_PATH=${P:-/opt/cse354-api}"
+
+      - name: Prepare SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Rsync application tree
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER: ${{ secrets.VPS_USER }}
+          DP: ${{ steps.deploy.outputs.path }}
+        run: |
+          rsync -avz --delete \
+            --exclude '.git' \
+            --exclude '__pycache__' \
+            --exclude '.venv' \
+            --exclude '*.pyc' \
+            --exclude 'notebooks' \
+            --exclude 'rag_index' \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new" \
+            ./ "${USER}@${HOST}:${DP}/"
+
+      - name: Remote venv, pip install, restart systemd
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER: ${{ secrets.VPS_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "${USER}@${HOST}" \
+            "export DP='${{ steps.deploy.outputs.path }}'; bash -s" << 'REMOTE'
+          set -euo pipefail
+          cd "$DP"
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip -q
+          .venv/bin/pip install -r deploy/requirements-api.txt -q
+          if systemctl is-enabled cse354-master-api 2>/dev/null; then
+            sudo systemctl restart cse354-master-api
+            sudo systemctl --no-pager status cse354-master-api || true
+          else
+            echo "::warning::Install systemd unit first — see deploy/README.md"
+          fi
+          REMOTE
+
+      - name: Health check (localhost on VPS)
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER: ${{ secrets.VPS_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "${USER}@${HOST}" \
+            'curl -sf http://127.0.0.1:8000/health && echo OK' || echo "::warning::Health check failed — add .env (REDIS_URL) and systemd unit"
